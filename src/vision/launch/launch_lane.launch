@@ -1,0 +1,7 @@
+<launch>
+  <group ns="lanes">
+    <node pkg="vision" name="DrivingLaneNode" type="classic_lane.py"/>
+  </group>
+
+
+</launch>

@@ -1,0 +1,2 @@
+usb_cam:vision:vision_opencv/cv_bridge:vision_opencv/image_geometry:vision_opencv/opencv_tests:vision_opencv/vision_opencv:vision_team/video_stream_opencv-master:yolov7_ros
+-DCATKIN_DEVEL_PREFIX=/home/parkchaewon/catkin_ws/devel -DCMAKE_INSTALL_PREFIX=/home/parkchaewon/catkin_ws/install -G Unix Makefiles
