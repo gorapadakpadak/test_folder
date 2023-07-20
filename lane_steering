@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import rospy
+import numpy as np
+import cv2, random, math, time
+
+from cv_bridge import CvBridge, CvBridgeError
+from sensor_msgs.msg import Image
+from std_msgs.msg import Header
+import message_filters
+
+#from ImageProcess import ImageProcess
+
+#chaewon
+from LaneNet.msgs import LaneInfo # message 
+
+
+# 영상 사이즈는 가로세로 640 x 480
+Width = 1280
+Height = 720
+# ROI 영역 : 세로 420 ~ 460 만큼 잘라서 사용
+Offset = 640
+Gap = 40
+
+DELTA_T = 0.05
+
+class PID:
+
+    def __init__(self, kp, ki, kd):
+
+        self.kp = 0.0
+        self.ki = 0.0
+        self.kd = 0.0
+
+        self.kp = kp
+        self.ki = ki
+        self.kd = kd
+
+        self.err_sum = 0.0
+        self.delta_err = 0.0
+        self.last_err = 0.0
+
+    def getPID(self, error):
+
+        err = error
+        self.err_sum += err * DELTA_T
+        self.delta_err = err - self.last_err
+        self.last_err = err
+
+        self.p = self.kp * err
+        self.i = self.ki * self.err_sum
+        self.d = self.kd * (self.delta_err * DELTA_T)
+
+        self.u = self.p + self.i + self.d
+
+        return self.u
+class DrivingNode:
+    def __init__(self):
+        rospy.init_node("DrivingLaneNode")
+        self.pub = rospy.Publisher("/lane_map_classic", Image, queue_size=1) #
+        self.bridge=CvBridge() #
+        self.image_sub = message_filters.Subscriber("/usb_cam/image_raw", Image)
+        self.lane_info_sub = message_filters.Subscriber("/lane_info", LaneInfo)
+        self.image = None # 초기 이미지를 None으로 설정합니다.
+        self.lane = Image()
+        self.is_started = False # `start` 함수가 호출되었는지 확인하기 위한 플래그를 추가합니다.
+        # Create a time synchronizer
+        ts = message_filters.ApproximateTimeSynchronizer([self.image_sub, self.lane_info_sub], 10, 0.1, allow_headerless=True)
+
+        # Connect the synchronizer to the callback function
+        ts.registerCallback(callback)
+
+        rospy.spin()
+        
+    # def LaneCallback(self,msg):
+    #     # chaewon
+    #     rospy.loginfo("Received LaneInfo message:")
+    #     dim=msg.dim
+    #     offset=msg.data_offset
+
+    #     x=msg.data[0]
+    #     y=msg.data[1]
+    #     self.start(x,y)
+    #     rospy.loginfo("  x={}, y={}".format(x, y))
+
+
+    #     # self.image = np.frombuffer(data.data, dtype=np.uint8).reshape(data.height, data.width, -1)
+    #     # if not self.is_started and self.image is not None:
+    #     #     self.start() # 이미지 데이터를 받은 후에 `start` 함수를 호출합니다.
+    #     #     self.is_started = True # `start` 함수가 호출되었음을 표시합니다.
+
+    # def ImageCallback(self,data):
+    #     self.image = np.frombuffer(data.data, dtype=np.uint8).reshape(data.height, data.width, -1)
+    #     if not self.is_started and self.image is not None:
+    #         self.start() # 이미지 데이터를 받은 후에 `start` 함수를 호출합니다.
+    #         self.is_started = True # `start` 함수가 호출되었음을 표시합니다.
+    def callback(image_msg, detect_msg):
+        # image_msg & detect_msg -> ImgProcess 
+
+        pass
+
+    def draw_steer(self,image, steer_angle):
+        global Width, Height, arrow_pic
+
+        arrow_pic = cv2.imread('./steer_arrow.png', cv2.IMREAD_COLOR)
+
+        origin_Height = arrow_pic.shape[0]
+        origin_Width = arrow_pic.shape[1]
+        steer_wheel_center = origin_Height * 0.76
+        arrow_Height = Height/2
+        arrow_Width = (arrow_Height * 462)/728
+
+        matrix = cv2.getRotationMatrix2D((origin_Width/2, steer_wheel_center), (steer_angle) * 2.5, 0.7)    
+        arrow_pic = cv2.warpAffine(arrow_pic, matrix, (origin_Width+60, origin_Height))
+        arrow_pic = cv2.resize(arrow_pic, dsize=(int(arrow_Width), int(arrow_Height)), interpolation=cv2.INTER_AREA)
+
+        gray_arrow = cv2.cvtColor(arrow_pic, cv2.COLOR_BGR2GRAY)
+        _, mask = cv2.threshold(gray_arrow, 1, 255, cv2.THRESH_BINARY_INV)
+
+        #arrow_roi = image[int(arrow_Height): int(Height), int(Width/2 - arrow_Width/2) : int(Width/2 + arrow_Width/2)]
+
+        arrow_pic_resized_height, arrow_pic_resized_width = arrow_pic.shape[:2] # resized arrow_pic의 높이와 너비를 얻습니다.
+
+        # arrow_roi를 설정할 때 arrow_pic의 크기에 따라 설정합니다.
+        arrow_roi = image[Height - arrow_pic_resized_height: Height, Width//2 - arrow_pic_resized_width//2 : Width//2 + arrow_pic_resized_width//2]
+
+        arrow_roi = cv2.add(arrow_pic, arrow_roi, mask=mask)
+        res = cv2.add(arrow_roi, arrow_pic)
+        image[Height - arrow_pic_resized_height: Height, Width//2 - arrow_pic_resized_width//2 : Width//2 + arrow_pic_resized_width//2] = arrow_roi
+
+
+        #arrow_roi = cv2.add(arrow_pic, arrow_roi, mask=mask)
+        
+        #image[(Height - arrow_Height): Height, (Width/2 - arrow_Width/2): (Width/2 + arrow_Width/2)] = res
+
+        cv2.imshow('steer', image)
+
+    def start(self,x,y): #`start'
+
+        global image, Width, Height
+
+        angle_list = [] #steering angle
+            
+        steering = PID(0.25, 0, 0.03) # 비례항에 0.25, 적분항에 0, 미분항에 0.03의 계수를 갖는 PID 제어기
+        # P  오차에 비례하는 제어를 수행 -> 오차가 클수록 제어의 강도 up
+        # I  오차가 계속되었을 때 제어의 강도를 증가 
+        # D  오차의 변화율에 따라 제어의 강도를 조정
+
+        
+        fourcc = cv2.VideoWriter_fourcc('D','I','V','X')  
+
+
+        out = cv2.VideoWriter('./Hough.avi', fourcc, 20, (1280, 720))
+
+        while not rospy.is_shutdown():
+
+            #ret, image = cap.read()
+            #cv2.imshow("image", image)
+
+            if self.image is None:
+                continue # 이미지가 비어 있으면 다음 루프로 넘어갑니다.
+
+
+            pos, frame = self.pro.process_image(self.image) # soojeounghaeyaham...!!
+            #print('1111111111111111111111111', pos)
+            center = (pos[0] + pos[1]) / 2        
+
+
+            angle = 335 - center
+            angle = steering.getPID(angle)
+
+            angle_list.append(angle)
+
+
+            if(len(angle_list) > 10):
+                #print('-----------------')
+                avg_angle = 0.0
+                for i in range(len(angle_list) - 1, len(angle_list) - 11, -1):
+                    #print(1)
+                    avg_angle += angle_list[i]
+        
+                avg_angle = avg_angle / 10
+                angle = avg_angle
+                #print('-----------------')
+
+
+            if angle > 20:
+                angle = 20
+            elif angle < -20:
+                angle = -20
+
+
+            self.draw_steer(frame, angle)
+            out.write(frame)
+
+
+            if cv2.waitKey(10) & 0xFF == ord('q'):
+                break
+
+if __name__ == '__main__':        
+    dn=DrivingNode()
+    dn.start()
+        
